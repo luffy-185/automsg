@@ -54,7 +54,30 @@ SPAM_DELAY_MIN = 1  # minimum 1 second delay
 SPAM_DELAY_MAX = 3600  # maximum 1 hour delay
 DM_COOLDOWN_MINUTES = 30
 
-client = TelegramClient(StringSession(SESSION), API_ID, API_HASH)
+# Initialize client with session recovery
+client = None
+
+def create_client(use_session=True):
+    """Create Telegram client with optional session recovery"""
+    global client
+    try:
+        if use_session and SESSION:
+            logger.info("Creating client with existing session...")
+            client = TelegramClient(StringSession(SESSION), API_ID, API_HASH)
+        else:
+            logger.info("Creating client with fresh session...")
+            session_name = f"userbot_session_{OWNER_ID}"
+            client = TelegramClient(session_name, API_ID, API_HASH)
+        
+        # Set client parameters for better stability
+        client.flood_sleep_threshold = 60
+        return client
+    except Exception as e:
+        logger.error(f"Error creating client: {e}")
+        return None
+
+# Create initial client
+client = create_client()
 
 # ===== Globals with Type Hints =====
 start_time = datetime.now()
@@ -163,7 +186,10 @@ async def get_entity_info(client, identifier):
         
     except Exception as e:
         logger.error(f"Critical error getting entity info for {identifier}: {e}")
-        # Return a fallback for
+        # Return fallback for numeric IDs
+        if isinstance(identifier, (int, str)) and str(identifier).isdigit():
+            return int(identifier), f"ID: {identifier}"
+        return None, None
 
 def validate_spam_params(message: str, delay: int) -> tuple[bool, str]:
     """Validate spam parameters"""
@@ -433,11 +459,12 @@ async def enhanced_reply_list(event):
         try:
             # Try to get the entity info for better display
             entity_id, display_name = await get_entity_info(client, target_id)
-            if display_name:
+            if display_name and entity_id:
                 identifier = f"{display_name}"
             else:
                 identifier = f"ID: {target_id}"
-        except:
+        except Exception as e:
+            logger.warning(f"Could not get info for {target_id}: {e}")
             identifier = f"ID: {target_id}"
             
         preview = reply_text[:50] + "..." if len(reply_text) > 50 else reply_text
@@ -478,11 +505,44 @@ async def clear_replies(event):
 async def auto_reply(event):
     """Handle incoming messages with improved error handling"""
     try:
-        sender = await event.get_sender()
-        if not sender:
+        # Add safety checks for event object
+        if not event or not hasattr(event, 'sender_id'):
+            logger.warning("Received invalid event object")
             return
             
-        chat = await event.get_chat()
+        # Safe entity retrieval with error handling
+        sender = None
+        chat = None
+        
+        try:
+            sender = await event.get_sender()
+        except Exception as e:
+            logger.error(f"Error getting sender: {e}")
+            # Try to get basic info from event
+            sender_id = getattr(event, 'sender_id', None)
+            if not sender_id:
+                return
+            # Create a minimal sender object
+            class MinimalSender:
+                def __init__(self, id):
+                    self.id = id
+                    self.first_name = "Unknown"
+            sender = MinimalSender(sender_id)
+            
+        try:
+            chat = await event.get_chat()
+        except Exception as e:
+            logger.error(f"Error getting chat: {e}")
+            # Create minimal chat object
+            class MinimalChat:
+                def __init__(self, id):
+                    self.id = getattr(event, 'chat_id', id)
+                    self.title = "Unknown Chat"
+            chat = MinimalChat(getattr(event, 'chat_id', sender.id))
+
+        if not sender:
+            logger.warning("Could not get sender information")
+            return
 
         global afk_msg_group, afk_msg_dm
 
@@ -490,118 +550,4 @@ async def auto_reply(event):
         if event.sender_id == OWNER_ID:
             if event.sender_id in setup_mode:
                 if event.raw_text.strip().lower() == "/cancel":
-                    setup_mode.pop(event.sender_id)
-                    await event.reply("❌ Auto-reply setup cancelled")
-                    return
-                    
-                target_id = setup_mode.pop(event.sender_id)
-                reply_text = sanitize_text(event.raw_text)
-                reply_db[target_id] = reply_text
-                await event.reply(f"✅ Reply set for `{target_id}`")
-                logger.info(f"Auto-reply set for {target_id}")
-                return
-                
-            # Handle AFK disabling when owner sends messages
-            if not event.is_private and afk_msg_group:
-                # Disable AFK for this specific group
-                afk_disabled_groups.add(chat.id)
-                logger.info(f"AFK group mode disabled for chat {chat.id} - owner sent message")
-            elif event.is_private and afk_msg_dm:
-                # Disable AFK for this specific user
-                afk_disabled_users.add(sender.id)
-                logger.info(f"AFK DM mode disabled for user {sender.id} - owner sent message")
-            return
-
-        # Auto-reply for private messages
-        if event.is_private and sender.id in reply_db:
-            await handle_dm_reply(event, sender, chat)
-
-        # Auto-reply for group messages
-        elif not event.is_private and chat.id in reply_db:
-            await handle_group_reply(event, sender, chat)
-
-        # AFK responses
-        await handle_afk_response(event, sender, chat)
-
-    except Exception as e:
-        logger.error(f"Error in auto_reply handler: {e}")
-
-async def handle_dm_reply(event, sender, chat):
-    """Handle DM auto-replies with cooldown"""
-    last = dm_cooldown.get(sender.id)
-    if not last or datetime.now() - last > timedelta(minutes=DM_COOLDOWN_MINUTES):
-        try:
-            msg = format_placeholders(reply_db[sender.id], sender, chat)
-            await event.reply(msg)
-            dm_cooldown[sender.id] = datetime.now()
-            logger.info(f"Auto-reply sent to user {sender.id}")
-        except Exception as e:
-            logger.error(f"Error sending DM auto-reply: {e}")
-
-async def handle_group_reply(event, sender, chat):
-    """Handle group auto-replies"""
-    # Only reply if message is a reply to bot or mentions bot
-    if event.is_reply or (client.me and client.me.username and f"@{client.me.username}" in event.raw_text):
-        try:
-            msg = format_placeholders(reply_db[chat.id], sender, chat)
-            await event.reply(msg)
-            logger.info(f"Auto-reply sent in chat {chat.id}")
-        except Exception as e:
-            logger.error(f"Error sending group auto-reply: {e}")
-
-async def handle_afk_response(event, sender, chat):
-    """Handle AFK responses with per-chat/user disabling"""
-    try:
-        # AFK for groups
-        if afk_msg_group and not event.is_private and chat.id not in afk_disabled_groups:
-            if event.is_reply or (client.me and client.me.username and f"@{client.me.username}" in event.raw_text):
-                msg = format_placeholders(afk_msg_group, sender, chat)
-                await event.reply(msg)
-                
-        # AFK for DMs
-        elif afk_msg_dm and event.is_private and sender.id not in afk_disabled_users:
-            last = dm_cooldown.get(sender.id)
-            if not last or datetime.now() - last > timedelta(minutes=DM_COOLDOWN_MINUTES):
-                msg = format_placeholders(afk_msg_dm, sender, chat)
-                await event.reply(msg)
-                dm_cooldown[sender.id] = datetime.now()
-    except Exception as e:
-        logger.error(f"Error handling AFK response: {e}")
-
-# ===== Cleanup Handler =====
-async def cleanup_handler():
-    """Cleanup resources on shutdown"""
-    logger.info("Cleaning up resources...")
-    for task in spam_tasks.values():
-        if not task.cancelled():
-            task.cancel()
-    spam_tasks.clear()
-
-# ===== Main Execution =====
-async def main():
-    """Main function with proper error handling"""
-    try:
-        logger.info("🚀 Starting bot...")
-        await client.start()
-        
-        # Get bot info
-        me = await client.get_me()
-        logger.info(f"Bot started as {me.first_name} (@{me.username})")
-        
-        await client.run_until_disconnected()
-        
-    except KeyboardInterrupt:
-        logger.info("Bot stopped by user")
-    except Exception as e:
-        logger.error(f"Fatal error: {e}")
-    finally:
-        await cleanup_handler()
-        logger.info("Bot shutdown complete")
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("Bot interrupted by user")
-    except Exception as e:
-        logger.error(f"Failed to start bot: {e}")
+                    setup_mode.pop

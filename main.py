@@ -1,63 +1,53 @@
 import os
 import asyncio
+import json
 from datetime import datetime, timedelta
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 
-# ===== Keep-alive =====
+# ===== Keep Alive =====
 try:
     from keep_alive import keep_alive
     keep_alive()
 except ImportError:
-    print("⚠️ keep_alive.py not found - continuing without it.")
+    print("⚠️ keep_alive.py not found - running without keepalive.")
 
-# ===== CONFIG =====
-API_ID = int(os.environ.get("API_ID", "0"))
+# ===== Config =====
+API_ID = int(os.environ.get("API_ID", 0))
 API_HASH = os.environ.get("API_HASH", "")
 SESSION = os.environ.get("SESSION", "")
-OWNER_ID = int(os.environ.get("OWNER_ID", "0"))
+OWNER_ID = int(os.environ.get("OWNER_ID", 0))
 
 client = TelegramClient(StringSession(SESSION), API_ID, API_HASH)
 
-# ===== GLOBALS =====
+# ===== Globals =====
 start_time = datetime.now()
-spam_tasks = {}            # {chat_id: asyncio.Task}
-reply_db = {}              # {id: reply_text}
-dm_cooldown = {}           # {user_id: datetime of last reply}
-afk_groups = set()
-afk_dm = set()
-afk_both = False
+spam_tasks = {}          # {chat_id: asyncio.Task}
+reply_db = {}            # {id: reply_text} -> setReplyFor
+dm_cooldown = {}         # {user_id: datetime} -> 30 min cooldown
+setup_mode = {}          # {owner_id: target_id} -> waiting for reply text
+afk_msg_group = None
+afk_msg_dm = None
+afk_all = False
 
-# ===== HELP TEXT =====
-HELP_TEXT = """
-📌 Commands:
-/spam <msg> <delay> - Start spam in this chat
-/spam off - Stop spam
-/status - Show uptime & active chats
-/setReplyFor <id> - Set auto-reply for user/chat
-/delReplyFor <id> - Delete a specific auto-reply
-/clearReplies - Clear all auto-replies
-/afk_group - Set AFK for groups
-/afk_dm - Set AFK for DMs
-/afk_both - Set AFK for all
-/afk_off - Disable AFK
-/help - Show this help
-"""
-
-# ===== UTILS =====
+# ===== Utils =====
 def is_owner(sender_id):
     return sender_id == OWNER_ID
 
 def format_placeholders(text, sender, chat):
-    text = text.replace("{name}", getattr(sender, "first_name", "") or "")
-    text = text.replace("{id}", str(sender.id))
-    text = text.replace("{chat}", getattr(chat, "title", "Private Chat") or "")
+    if "{name}" in text:
+        text = text.replace("{name}", sender.first_name if sender.first_name else "")
+    if "{id}" in text:
+        text = text.replace("{id}", str(sender.id))
+    if "{chat}" in text and chat:
+        text = text.replace("{chat}", getattr(chat, "title", "Private Chat"))
     return text
 
 def uptime():
-    return str(datetime.now() - start_time).split(".")[0]
+    delta = datetime.now() - start_time
+    return str(delta).split(".")[0]
 
-# ===== COMMAND HANDLER =====
+# ===== Command Handler =====
 @client.on(events.NewMessage(pattern=r"^/"))
 async def command_handler(event):
     if not is_owner(event.sender_id):
@@ -69,7 +59,7 @@ async def command_handler(event):
 
     # ---- Spam ----
     if cmd == "/spam":
-        if len(args) >= 2 and args[1].lower() == "off":
+        if len(args) == 2 and args[1].lower() == "off":
             task = spam_tasks.pop(chat_id, None)
             if task:
                 task.cancel()
@@ -87,93 +77,150 @@ async def command_handler(event):
             if chat_id in spam_tasks:
                 spam_tasks[chat_id].cancel()
 
-            async def spammer():
+            async def spam_loop():
                 while True:
                     await client.send_message(chat_id, msg)
                     await asyncio.sleep(delay)
 
-            spam_tasks[chat_id] = asyncio.create_task(spammer())
-            await event.reply(f"✅ Spamming started: `{msg}` every {delay}s")
+            spam_tasks[chat_id] = asyncio.create_task(spam_loop())
+            await event.reply(f"✅ Spamming `{msg}` every {delay}s")
         else:
             await event.reply("❌ Usage: /spam <msg> <delay> OR /spam off")
 
     # ---- Status ----
     elif cmd == "/status":
-        active = ", ".join(str(cid) for cid in spam_tasks.keys()) or "None"
-        msg = f"⏱ Uptime: {uptime()}\n💬 Active spams: {active}\n🤖 Auto-replies: {len(reply_db)}\nAFK Groups: {afk_groups}\nAFK DMs: {afk_dm}\nAFK Both: {afk_both}"
+        active_spams = ", ".join(str(cid) for cid in spam_tasks.keys()) or "None"
+        reply_count = len(reply_db)
+        msg = (
+            f"⏱ Uptime: {uptime()}\n"
+            f"💬 Active spams: {active_spams}\n"
+            f"🤖 Auto-replies: {reply_count}\n"
+            f"AFK Group: {afk_msg_group if afk_msg_group else '❌ Off'}\n"
+            f"AFK DM: {afk_msg_dm if afk_msg_dm else '❌ Off'}\n"
+            f"AFK All: {'✅' if afk_all else '❌'}"
+        )
         await event.reply(msg)
 
     # ---- Help ----
     elif cmd == "/help":
-        await event.reply(HELP_TEXT)
+        help_text = """
+📌 Available Commands:
+/spam <msg> <delay>  - Start spam in this chat
+/spam off            - Stop spam in this chat
+/status              - Show uptime & active chats
+/setReplyFor <id>    - Set auto-reply for user/chat
+/listReplies         - Show all saved replies
+/delReplyFor <id>    - Delete a specific auto-reply
+/clearReplies        - Clear all auto-replies
+/afk_group <msg>     - AFK for all groups
+/afk_dm <msg>        - AFK for all DMs
+/afk_all <msg>       - AFK for both groups and DMs
+/afk_off             - Turn off all AFK
+/help                - Show this help
+"""
+        await event.reply(help_text)
 
     # ---- Set Reply ----
     elif cmd == "/setreplyfor" and len(args) == 2:
         target_id = int(args[1])
+        setup_mode[event.sender_id] = target_id
         await event.reply(f"✍️ Send the reply message for ID `{target_id}`")
-        @client.on(events.NewMessage(from_users=OWNER_ID))
-        async def save_reply(event2):
-            reply_db[target_id] = event2.raw_text
-            await event2.reply(f"✅ Reply set for {target_id}")
-            client.remove_event_handler(save_reply)
+
+    elif cmd == "/listreplies":
+        if reply_db:
+            msg = "\n".join([f"{k}: {v}" for k, v in reply_db.items()])
+        else:
+            msg = "❌ No auto-replies set."
+        await event.reply(msg)
 
     elif cmd == "/delreplyfor" and len(args) == 2:
         target_id = int(args[1])
-        reply_db.pop(target_id, None)
-        await event.reply(f"🗑 Deleted reply for {target_id}")
+        if target_id in reply_db:
+            reply_db.pop(target_id)
+            await event.reply(f"🗑 Deleted reply for {target_id}")
+        else:
+            await event.reply("❌ No reply found for that ID.")
 
-    elif cmd == "/clearReplies":
+    elif cmd == "/clearreplies":
         reply_db.clear()
         await event.reply("🗑 All auto-replies cleared.")
 
     # ---- AFK ----
-    elif cmd == "/afk_group":
-        afk_groups.add(chat_id)
-        await event.reply("✅ AFK for groups enabled.")
-    elif cmd == "/afk_dm":
-        afk_dm.add(chat_id)
-        await event.reply("✅ AFK for DMs enabled.")
-    elif cmd == "/afk_both":
-        afk_both = True
-        await event.reply("✅ AFK for all chats enabled.")
-    elif cmd == "/afk_off":
-        afk_groups.discard(chat_id)
-        afk_dm.discard(chat_id)
-        afk_both = False
-        await event.reply("🛑 AFK disabled for this chat.")
+    elif cmd == "/afk_group" and len(args) > 1:
+        global afk_msg_group
+        afk_msg_group = " ".join(args[1:])
+        await event.reply(f"✅ AFK Group set: {afk_msg_group}")
 
-# ===== MESSAGE HANDLER =====
+    elif cmd == "/afk_dm" and len(args) > 1:
+        global afk_msg_dm
+        afk_msg_dm = " ".join(args[1:])
+        await event.reply(f"✅ AFK DM set: {afk_msg_dm}")
+
+    elif cmd == "/afk_all" and len(args) > 1:
+        global afk_all
+        afk_all = True
+        msg = " ".join(args[1:])
+        afk_msg_group = msg
+        afk_msg_dm = msg
+        await event.reply(f"✅ AFK All set: {msg}")
+
+    elif cmd == "/afk_off":
+        afk_msg_group = None
+        afk_msg_dm = None
+        afk_all = False
+        await event.reply("✅ All AFK disabled")
+
+# ===== Message Handler =====
 @client.on(events.NewMessage)
 async def auto_reply(event):
     sender = await event.get_sender()
     chat = await event.get_chat()
-    is_private = event.is_private
-    chat_id = event.chat_id
-    sender_id = event.sender_id
 
-    # remove AFK if owner sends message
-    if sender_id == OWNER_ID:
-        if is_private: afk_dm.discard(chat_id)
-        else: afk_groups.discard(chat_id)
+    # handle owner setup mode for setReplyFor
+    if event.sender_id == OWNER_ID:
+        if event.sender_id in setup_mode:
+            target_id = setup_mode.pop(event.sender_id)
+            reply_db[target_id] = event.raw_text
+            await event.reply(f"✅ Reply set for {target_id}")
+        # cancel AFK if owner sends message
+        if not event.is_private:
+            global afk_msg_group
+            afk_msg_group = None
+        else:
+            global afk_msg_dm
+            afk_msg_dm = None
         return
 
-    # DM replies
-    if is_private:
-        if sender_id in reply_db or afk_dm or afk_both:
-            last = dm_cooldown.get(sender_id)
+    # ---- setReplyFor ----
+    if event.is_private:
+        if sender.id in reply_db:
+            # check cooldown
+            last = dm_cooldown.get(sender.id)
             if not last or datetime.now() - last > timedelta(minutes=30):
-                msg_text = reply_db.get(sender_id, "I'm away right now.")
-                await event.reply(format_placeholders(msg_text, sender, chat))
-                dm_cooldown[sender_id] = datetime.now()
-
-    # Group replies
+                msg = format_placeholders(reply_db[sender.id], sender, chat)
+                await event.reply(msg)
+                dm_cooldown[sender.id] = datetime.now()
     else:
-        if chat_id in reply_db or chat_id in afk_groups or afk_both:
+        if chat.id in reply_db:
             if event.is_reply or (client.me and client.me.username and f"@{client.me.username}" in event.raw_text):
-                msg_text = reply_db.get(chat_id, "I'm away right now.")
-                await event.reply(format_placeholders(msg_text, sender, chat))
+                msg = format_placeholders(reply_db[chat.id], sender, chat)
+                await event.reply(msg)
 
-# ===== RUN =====
-print("🚀 Userbot started...")
+    # ---- AFK ----
+    # Groups
+    if afk_msg_group and not event.is_private:
+        if event.is_reply or (client.me and client.me.username and f"@{client.me.username}" in event.raw_text):
+            msg = format_placeholders(afk_msg_group, sender, chat)
+            await event.reply(msg)
+    # DMs
+    if afk_msg_dm and event.is_private:
+        last = dm_cooldown.get(sender.id)
+        if not last or datetime.now() - last > timedelta(minutes=30):
+            msg = format_placeholders(afk_msg_dm, sender, chat)
+            await event.reply(msg)
+            dm_cooldown[sender.id] = datetime.now()
+
+# ===== Run Bot =====
+print("🚀 Bot started...")
 client.start()
 client.run_until_disconnected()

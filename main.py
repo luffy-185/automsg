@@ -110,20 +110,48 @@ def uptime() -> str:
     return str(delta).split(".")[0]
 
 async def get_entity_info(client, identifier):
-    """Get entity info from username or ID"""
+    """Get entity info from username or ID with robust error handling"""
     try:
+        # Handle string identifiers (usernames)
         if isinstance(identifier, str):
             if identifier.startswith('@'):
                 identifier = identifier[1:]
-            entity = await client.get_entity(identifier)
+            
+            # Try to get entity with retries for session issues
+            for attempt in range(3):
+                try:
+                    entity = await client.get_entity(identifier)
+                    break
+                except Exception as e:
+                    if attempt == 2:  # Last attempt
+                        logger.error(f"Failed to get entity after 3 attempts for {identifier}: {e}")
+                        return None, None
+                    logger.warning(f"Attempt {attempt + 1} failed for {identifier}: {e}")
+                    await asyncio.sleep(1)
         else:
-            entity = await client.get_entity(int(identifier))
+            # Handle numeric IDs
+            try:
+                entity_id = int(identifier)
+                for attempt in range(3):
+                    try:
+                        entity = await client.get_entity(entity_id)
+                        break
+                    except Exception as e:
+                        if attempt == 2:  # Last attempt
+                            logger.error(f"Failed to get entity after 3 attempts for ID {entity_id}: {e}")
+                            return None, None
+                        logger.warning(f"Attempt {attempt + 1} failed for ID {entity_id}: {e}")
+                        await asyncio.sleep(1)
+            except ValueError:
+                logger.error(f"Invalid identifier format: {identifier}")
+                return None, None
         
+        # Extract display name safely
         if hasattr(entity, 'username') and entity.username:
             display_name = f"@{entity.username}"
-        elif hasattr(entity, 'title'):
+        elif hasattr(entity, 'title') and entity.title:
             display_name = entity.title
-        elif hasattr(entity, 'first_name'):
+        elif hasattr(entity, 'first_name') and entity.first_name:
             name_parts = [entity.first_name]
             if hasattr(entity, 'last_name') and entity.last_name:
                 name_parts.append(entity.last_name)
@@ -132,9 +160,10 @@ async def get_entity_info(client, identifier):
             display_name = f"ID: {entity.id}"
             
         return entity.id, display_name
+        
     except Exception as e:
-        logger.error(f"Error getting entity info for {identifier}: {e}")
-        return None, None
+        logger.error(f"Critical error getting entity info for {identifier}: {e}")
+        # Return a fallback for
 
 def validate_spam_params(message: str, delay: int) -> tuple[bool, str]:
     """Validate spam parameters"""
@@ -262,6 +291,9 @@ async def command_handler(event):
         elif cmd == "/unblock":
             blocked_chats.discard(chat_id)
             await event.reply("✅ Chat unblocked")
+
+        else:
+            await event.reply("❌ Unknown command. Use /help for available commands.")
 
     except Exception as e:
         logger.error(f"Error in command handler: {e}")

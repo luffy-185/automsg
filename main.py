@@ -263,9 +263,6 @@ async def command_handler(event):
             blocked_chats.discard(chat_id)
             await event.reply("✅ Chat unblocked")
 
-        else:
-            await event.reply("❌ Unknown command. Use /help for available commands.")
-
     except Exception as e:
         logger.error(f"Error in command handler: {e}")
         await event.reply(f"❌ Error processing command: {str(e)}")

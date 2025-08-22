@@ -153,9 +153,11 @@ class TelegramBot:
         """Handle direct messages"""
         try:
             user_id = event.sender_id
+            logger.info(f"Received DM from user {user_id}, owner is {self.owner_id}")
             
             # Check if this is a command from the bot owner
             if user_id == self.owner_id:
+                logger.info(f"Owner command detected from {user_id}")
                 await self.handle_command(event)
                 return
             
@@ -223,6 +225,7 @@ class TelegramBot:
         """Handle bot commands"""
         try:
             text = event.message.text.strip()
+            logger.info(f"Processing command from owner {self.owner_id}: {text}")
             
             if text.startswith('/spam '):
                 await self.handle_spam_command(event, text)
@@ -250,10 +253,29 @@ class TelegramBot:
                 await self.handle_help_command(event)
             elif text == '/status':
                 await self.handle_status_command(event)
+            elif text == '/debug':
+                await self.handle_debug_command(event)
             elif text == '/stop_spam':
                 await self.handle_stop_spam_command(event)
         except Exception as e:
             logger.error(f"Error handling command: {e}")
+            await event.reply(f"❌ Command error: {e}")
+    
+    async def handle_debug_command(self, event):
+        """Handle debug command to check bot status"""
+        try:
+            debug_info = f"""🔍 **Debug Info:**
+            
+**Your User ID:** {event.sender_id}
+**Set Owner ID:** {self.owner_id}
+**Match:** {'✅ YES' if event.sender_id == self.owner_id else '❌ NO'}
+**Bot User ID:** {self.bot_user_id}
+**Message Type:** {'DM' if event.is_private else 'Group'}
+**Command Text:** `{event.message.text}`"""
+            
+            await event.reply(debug_info)
+        except Exception as e:
+            await event.reply(f"Debug error: {e}")
     
     async def handle_help_command(self, event):
         """Handle help command"""
@@ -500,41 +522,4 @@ class TelegramBot:
                 self.afk_message = "Currently offline"
             
             self.afk_group_active = True
-            self.afk_dm_active = True
-            self.save_settings()
-            
-            await event.reply(f"✅ AFK activated for groups and DMs with message: {self.afk_message}")
-            
-        except Exception as e:
-            await event.reply(f"❌ Error: {e}")
-    
-    async def handle_afk_off_command(self, event):
-        """Handle afk_off command"""
-        self.afk_group_active = False
-        self.afk_dm_active = False
-        self.save_settings()
-        await event.reply("✅ All AFK modes deactivated")
-
-def run_flask():
-    """Run Flask server in a separate thread"""
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
-
-async def main():
-    """Main function"""
-    # Start Flask server in background thread for health checks
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
-    
-    # Start the bot
-    bot = TelegramBot()
-    while True:
-        try:
-            await bot.start()
-        except Exception as e:
-            logger.error(f"Bot crashed: {e}")
-            logger.info("Restarting in 10 seconds...")
-            await asyncio.sleep(10)
-
-if __name__ == '__main__':
-    asyncio.run(main())
+            self.afk_dm_a

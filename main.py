@@ -40,6 +40,9 @@ class TelegramBot:
         self.afk_dm_active = False
         self.afk_message = "Currently offline"
         self.spam_tasks: Dict[int, asyncio.Task] = {} # chat_id -> task
+        
+        # Track AFK disable per chat
+        self.afk_disabled_chats: Set[int] = set()  # chats where AFK is disabled
 
         self.bot_user_id = None
         self.start_time = time.time()
@@ -51,7 +54,8 @@ class TelegramBot:
             'reply_settings': self.reply_settings,
             'afk_group_active': self.afk_group_active,
             'afk_dm_active': self.afk_dm_active,
-            'afk_message': self.afk_message
+            'afk_message': self.afk_message,
+            'afk_disabled_chats': list(self.afk_disabled_chats)
         }
         try:
             with open('bot_settings.json', 'w') as f:
@@ -68,6 +72,7 @@ class TelegramBot:
                     self.afk_group_active = settings.get('afk_group_active', False)
                     self.afk_dm_active = settings.get('afk_dm_active', False)
                     self.afk_message = settings.get('afk_message', "Currently offline")
+                    self.afk_disabled_chats = set(settings.get('afk_disabled_chats', []))
         except Exception as e:
             logger.error(f"Error loading settings: {e}")
 
@@ -98,12 +103,28 @@ class TelegramBot:
 
     async def handle_outgoing(self, event):
         if event.sender_id == self.owner_id:
-            if event.message.text != self.afk_message:
-                if self.afk_group_active or self.afk_dm_active:
-                    self.afk_group_active = False
-                    self.afk_dm_active = False
+            message_text = event.message.text or ""
+            chat_id = event.chat_id if hasattr(event, 'chat_id') else event.peer_id.user_id
+            
+            # If owner sends any message that's not the AFK message
+            if message_text != self.afk_message:
+                # Remove setReplyFor for this specific chat/user
+                if chat_id in self.reply_settings:
+                    del self.reply_settings[chat_id]
                     self.save_settings()
-                    logger.info("AFK disabled - owner sent message")
+                    logger.info(f"Removed setReplyFor for chat {chat_id} - owner sent message")
+                
+                # Disable AFK for this specific chat only
+                if event.is_private:
+                    if self.afk_dm_active:
+                        self.afk_disabled_chats.add(chat_id)
+                        self.save_settings()
+                        logger.info(f"AFK disabled for DM {chat_id} - owner sent message")
+                else:
+                    if self.afk_group_active:
+                        self.afk_disabled_chats.add(chat_id)
+                        self.save_settings()
+                        logger.info(f"AFK disabled for group {chat_id} - owner sent message")
 
     async def handle_message(self, event):
         try:
@@ -122,14 +143,20 @@ class TelegramBot:
 
     async def handle_dm(self, event):
         user_id = event.sender_id
-
-        # AFK DM 5 min cooldown
         now = time.time()
-        if self.afk_dm_active and (user_id not in self.user_last_reply or now - self.user_last_reply[user_id] >= 300):
-            await event.reply(self.afk_message)
-            self.user_last_reply[user_id] = now
 
-        # setReplyFor DM cooldown 30 min
+        # Skip if it's the owner
+        if user_id == self.owner_id:
+            return
+
+        # AFK DM - Reply to ALL DMs when active (unless disabled for this chat)
+        if self.afk_dm_active and user_id not in self.afk_disabled_chats:
+            if user_id not in self.user_last_reply or now - self.user_last_reply[user_id] >= 300:
+                await event.reply(self.afk_message)
+                self.user_last_reply[user_id] = now
+                return  # Don't process setReplyFor if AFK replied
+
+        # setReplyFor DM cooldown 30 min (only if AFK didn't reply)
         if user_id in self.reply_settings:
             if user_id not in self.user_last_reply or now - self.user_last_reply[user_id] >= 1800:
                 await event.reply(self.reply_settings[user_id])
@@ -137,22 +164,34 @@ class TelegramBot:
 
     async def handle_group(self, event):
         chat_id = event.chat_id
-        is_mentioned = event.message.mentioned or (event.message.reply_to_msg_id and 
-                                                  (await event.get_reply_message()).sender_id == self.bot_user_id)
+        
+        # Check if mentioned
+        is_mentioned = False
+        if event.message.mentioned:
+            is_mentioned = True
+        elif event.message.reply_to_msg_id:
+            try:
+                reply_msg = await event.get_reply_message()
+                if reply_msg and reply_msg.sender_id == self.bot_user_id:
+                    is_mentioned = True
+            except:
+                pass
+
         if not is_mentioned:
             return
 
-        # AFK group
-        if self.afk_group_active:
+        # AFK group - Reply to ALL mentions when active (unless disabled for this chat)
+        if self.afk_group_active and chat_id not in self.afk_disabled_chats:
             await event.reply(self.afk_message)
+            return  # Don't process setReplyFor if AFK replied
 
-        # setReplyFor group
+        # setReplyFor group (only if AFK didn't reply)
         if chat_id in self.reply_settings:
             await event.reply(self.reply_settings[chat_id])
 
     async def handle_command(self, event):
         text = event.message.text.strip()
-        chat_id = event.chat_id
+        chat_id = event.chat_id if hasattr(event, 'chat_id') else event.peer_id.user_id
 
         if text.startswith('/spam '):
             parts = text.split(' ', 2)
@@ -226,22 +265,26 @@ class TelegramBot:
         elif text.startswith('/afk_group '):
             self.afk_message = text[len('/afk_group '):].strip()
             self.afk_group_active = True
+            self.afk_disabled_chats.clear()  # Reset disabled chats
             self.save_settings()
             await event.reply(f"✅ AFK group activated: {self.afk_message}")
 
         elif text == '/afk_group_off':
             self.afk_group_active = False
+            self.afk_disabled_chats.clear()
             self.save_settings()
             await event.reply("✅ AFK group deactivated")
 
         elif text.startswith('/afk_dm '):
             self.afk_message = text[len('/afk_dm '):].strip()
             self.afk_dm_active = True
+            self.afk_disabled_chats.clear()  # Reset disabled chats
             self.save_settings()
             await event.reply(f"✅ AFK DM activated: {self.afk_message}")
 
         elif text == '/afk_dm_off':
             self.afk_dm_active = False
+            self.afk_disabled_chats.clear()
             self.save_settings()
             await event.reply("✅ AFK DM deactivated")
 
@@ -249,19 +292,22 @@ class TelegramBot:
             self.afk_message = text[len('/afk '):].strip()
             self.afk_group_active = True
             self.afk_dm_active = True
+            self.afk_disabled_chats.clear()  # Reset disabled chats
             self.save_settings()
-            await event.reply(f"✅ AFK activated: {self.afk_message}")
+            await event.reply(f"✅ AFK activated for both groups and DMs: {self.afk_message}")
 
         elif text == '/afk_off':
             self.afk_group_active = False
             self.afk_dm_active = False
+            self.afk_disabled_chats.clear()
             self.save_settings()
             await event.reply("✅ AFK all deactivated")
 
         elif text == '/status':
             uptime = self.get_uptime()
             spam_count = len(self.spam_tasks)
-            await event.reply(f"⏱ Uptime: {uptime}\n🤖 Bot ID: {self.bot_user_id}\n📊 AFK Group: {self.afk_group_active}\n📊 AFK DM: {self.afk_dm_active}\n📋 Active Replies: {len(self.reply_settings)}\n🚀 Spam Tasks: {spam_count}")
+            disabled_count = len(self.afk_disabled_chats)
+            await event.reply(f"⏱ Uptime: {uptime}\n🤖 Bot ID: {self.bot_user_id}\n📊 AFK Group: {self.afk_group_active}\n📊 AFK DM: {self.afk_dm_active}\n📋 Active Replies: {len(self.reply_settings)}\n🚀 Spam Tasks: {spam_count}\n🚫 AFK Disabled Chats: {disabled_count}")
 
         elif text == '/help':
             help_text = """🤖 Bot Commands (Owner Only):
@@ -278,16 +324,18 @@ class TelegramBot:
 • /listreply - list active replies
 
 **AFK**
-• /afk_group <msg> - enable group AFK
+• /afk_group <msg> - enable group AFK (all mentions)
 • /afk_group_off - disable group AFK
-• /afk_dm <msg> - enable DM AFK
+• /afk_dm <msg> - enable DM AFK (all DMs, 5min cooldown)
 • /afk_dm_off - disable DM AFK
 • /afk <msg> - enable both AFK
 • /afk_off - disable all AFK
 
 **Info**
 • /status - show bot status
-• /help - show this help"""
+• /help - show this help
+
+**Note**: AFK auto-disables per chat when you send messages there. setReplyFor also resets when you message that chat."""
             await event.reply(help_text)
 
     async def start_spam(self, chat_id: int, msg: str, delay: int):

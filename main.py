@@ -294,8 +294,8 @@ class TelegramBot:
 
 # -------------------- Main --------------------
 async def main():
-    bot = TelegramBot()
     keep_alive()
+    bot = TelegramBot()
     while True:
         try:
             await bot.start()

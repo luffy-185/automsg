@@ -60,7 +60,11 @@ class TelegramBot:
     def __init__(self):
         self.client = TelegramClient(StringSession(SESSION), API_ID, API_HASH)
         self.db = BotDatabase()
-
+        print("🔑 ENV DEBUG:")
+        print("API_ID:", os.getenv("API_ID"))
+        print("API_HASH:", os.getenv("API_HASH"))
+        print("SESSION_STRING (first 20 chars):", str(os.getenv("SESSION_STRING"))[:20])
+        print("OWNER_ID:", os.getenv("OWNER_ID"))
         # Load settings
         self.reply_settings = self.db.get("reply_settings", {})
         self.afk_group_active = self.db.get("afk_group_active", False)

@@ -171,10 +171,10 @@ class TelegramBot:
                     break
 
         await self.client.run_until_disconnected()
-
-# ===== MAIN =====
+        
+# ==== MAIN ====
 if __name__ == "__main__":
-    keep_alive()  # start flask server
+    keep_alive()  # start flask
 
     bot = Bot()
     try:
@@ -183,5 +183,7 @@ if __name__ == "__main__":
         print(f"✅ Logged in as: {me.first_name} (ID: {me.id})")
     except Exception as e:
         print(f"❌ Login failed: {e}")
+        exit(1)
 
+    print("🤖 Bot is now running...")
     bot.client.run_until_disconnected()

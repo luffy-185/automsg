@@ -21,6 +21,11 @@ logger = logging.getLogger(__name__)
 # ===== DATABASE =====
 class BotDatabase:
     def __init__(self, db_path="settings.db"):
+        print("🔑 ENV DEBUG:")
+        print("API_ID:", os.getenv("API_ID"))
+        print("API_HASH:", os.getenv("API_HASH"))
+        print("SESSION_STRING (first 20 chars):", str(os.getenv("SESSION_STRING"))[:20])
+        print("OWNER_ID:", os.getenv("OWNER_ID"))
         self.db_path = db_path
         self.lock = threading.Lock()
         self._create_tables()

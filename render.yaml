@@ -14,5 +14,7 @@ services:
         sync: false
       - key: SESSION_STRING
         sync: false
+      - key: OWNER_ID
+        sync: false
       - key: PORT
         value: 10000

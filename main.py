@@ -170,6 +170,14 @@ class TelegramBot:
 
 # ===== MAIN =====
 if __name__ == "__main__":
-    keep_alive()
-    bot = TelegramBot()
-    asyncio.run(bot.start())
+    keep_alive()  # start flask
+
+    try:
+        client.start()
+        me = client.loop.run_until_complete(client.get_me())
+        print(f"✅ Logged in as: {me.first_name} (ID: {me.id})")
+    except Exception as e:
+        print(f"❌ Login failed: {e}")
+
+    with client:
+        client.loop.run_until_complete(main())

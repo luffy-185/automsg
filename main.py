@@ -124,51 +124,54 @@ class TelegramBot:
         except Exception as e:
             logger.error(f"Error handling message: {e}")
     
-    # ----------------- DM HANDLER -----------------
-    async def handle_dm(self, event):
-        try:
-            user_id = event.sender_id
-            if user_id == self.owner_id:
-                await self.handle_command(event)
-                return
-            if event.message.text and event.message.text.startswith('/'):
-                return  # ignore commands from others
-            
-            # AFK DM (5 min cooldown)
-            if self.afk_dm_active:
-                last = self.user_last_reply.get(user_id, 0)
-                if time.time() - last >= self.afk_dm_cooldown:
-                    await event.reply(self.afk_message)
-                    self.user_last_reply[user_id] = time.time()
-            
-            # setReplyFor DM (30 min cooldown)
-            if user_id in self.reply_settings:
-                last = self.user_last_reply.get(user_id, 0)
-                if time.time() - last >= 1800:
-                    await event.reply(self.reply_settings[user_id])
-                    self.user_last_reply[user_id] = time.time()
-        except Exception as e:
-            logger.error(f"Error handling DM: {e}")
-    
-    # ----------------- GROUP HANDLER -----------------
-    async def handle_group_message(self, event):
-        try:
-            chat_id = event.chat_id
-            is_mentioned = False
-            if event.message.mentioned:
-                is_mentioned = True
-            if event.message.reply_to:
-                replied_msg = await event.get_reply_message()
-                if replied_msg and replied_msg.sender_id == self.bot_user_id:
-                    is_mentioned = True
-            if not is_mentioned:
-                return
-            if self.afk_group_active:
+  # ----------------- DM HANDLER -----------------
+async def handle_dm(self, event):
+    try:
+        user_id = event.sender_id
+        if user_id == self.owner_id:
+            await self.handle_command(event)
+            return
+        if event.message.text and event.message.text.startswith('/'):
+            return  # ignore commands from others
+
+        # AFK DM (5 min cooldown)
+        if self.afk_dm_active:
+            last = self.user_last_reply.get(user_id, 0)
+            if time.time() - last >= self.afk_dm_cooldown:
                 await event.reply(self.afk_message)
-            if chat_id in self.reply_settings:
-                await event.reply(self.reply_settings[chat_id])
-        except Exception as e:
-            logger.error(f"Error handling group message: {e}")
+                self.user_last_reply[user_id] = time.time()
+
+        # setReplyFor DM (30 min cooldown)
+        if user_id in self.reply_settings:
+            last = self.user_last_reply.get(user_id, 0)
+            if time.time() - last >= 1800:  # 30 min
+                await event.reply(self.reply_settings[user_id])
+                self.user_last_reply[user_id] = time.time()
+
+# ----------------- GROUP HANDLER -----------------
+async def handle_group_message(self, event):
+    try:
+        chat_id = event.chat_id
+        is_mentioned = False
+        if event.message.mentioned:
+            is_mentioned = True
+        if event.message.reply_to:
+            replied_msg = await event.get_reply_message()
+            if replied_msg and replied_msg.sender_id == self.bot_user_id:
+                is_mentioned = True
+        if not is_mentioned:
+            return
+
+        # AFK group
+        if self.afk_group_active:
+            await event.reply(self.afk_message)
+
+        # setReplyFor group - NO cooldown, always reply
+        if chat_id in self.reply_settings:
+            await event.reply(self.reply_settings[chat_id])
+    except Exception as e:
+        logger.error(f"Error handling group message: {e}")
+
     
     # ----------------- COMMANDS -----------------
     async def handle_command(self, event):

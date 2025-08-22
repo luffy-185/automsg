@@ -176,12 +176,12 @@ class TelegramBot:
 if __name__ == "__main__":
     keep_alive()  # start flask server
 
+    bot = Bot()
     try:
-        bot = Bot()  # initialize your bot class (this runs __init__ and ENV DEBUG)
-        bot.client.loop.run_until_complete(bot.client.start())
+        bot.client.start()
         me = bot.client.loop.run_until_complete(bot.client.get_me())
         print(f"✅ Logged in as: {me.first_name} (ID: {me.id})")
-
-        bot.client.run_until_disconnected()
     except Exception as e:
         print(f"❌ Login failed: {e}")
+
+    bot.client.run_until_disconnected()

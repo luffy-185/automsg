@@ -33,6 +33,7 @@ class TelegramBot:
         self.api_id = int(os.getenv('API_ID'))
         self.api_hash = os.getenv('API_HASH')
         self.session_string = os.getenv('SESSION_STRING')
+        self.owner_id = int(os.getenv('OWNER_ID'))  # Owner ID from environment
         
         self.client = TelegramClient(StringSession(self.session_string), self.api_id, self.api_hash)
         
@@ -102,7 +103,12 @@ class TelegramBot:
         try:
             await self.client.start()
             self.bot_user_id = (await self.client.get_me()).id
-            logger.info(f"Bot started! User ID: {self.bot_user_id}")
+            logger.info(f"Bot started! Session User ID: {self.bot_user_id}")
+            logger.info(f"Owner ID set to: {self.owner_id}")
+            
+            # Verify owner ID matches session (optional check)
+            if self.bot_user_id != self.owner_id:
+                logger.warning(f"Owner ID ({self.owner_id}) doesn't match session user ({self.bot_user_id})")
             
             # Register event handlers
             self.client.add_event_handler(self.handle_message, events.NewMessage)
@@ -120,14 +126,16 @@ class TelegramBot:
     async def handle_outgoing(self, event):
         """Handle outgoing messages to disable AFK when user sends a message"""
         try:
-            # Check if this is not an AFK message
-            if event.message.text != self.afk_message:
-                # Disable AFK if user sends a different message
-                if self.afk_group_active or self.afk_dm_active:
-                    self.afk_group_active = False
-                    self.afk_dm_active = False
-                    self.save_settings()
-                    logger.info("AFK disabled - user sent a message")
+            # Only process outgoing messages from the owner
+            if event.sender_id == self.owner_id:
+                # Check if this is not an AFK message
+                if event.message.text != self.afk_message:
+                    # Disable AFK if user sends a different message
+                    if self.afk_group_active or self.afk_dm_active:
+                        self.afk_group_active = False
+                        self.afk_dm_active = False
+                        self.save_settings()
+                        logger.info("AFK disabled - owner sent a message")
         except Exception as e:
             logger.error(f"Error handling outgoing message: {e}")
     
@@ -147,13 +155,14 @@ class TelegramBot:
             user_id = event.sender_id
             
             # Check if this is a command from the bot owner
-            if user_id == self.bot_user_id:
+            if user_id == self.owner_id:
                 await self.handle_command(event)
                 return
             
-            # If someone else sends a command, ignore it completely
+            # If someone else sends a command, ignore it completely (no response)
             if event.message.text and event.message.text.startswith('/'):
-                return  # Just return, do nothing
+                logger.info(f"Unauthorized command attempt from user {user_id}: {event.message.text}")
+                return  # Complete silence for non-owners
             
             # Handle AFK DM for non-command messages
             if self.afk_dm_active:

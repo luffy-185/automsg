@@ -107,9 +107,11 @@ class TelegramBot:
 
     async def handle_message(self, event):
         try:
-            # Only owner commands
-            if event.message.text and event.message.text.startswith('/') and event.sender_id != self.owner_id:
-                return
+            # Commands - Only respond if owner, otherwise ignore completely
+            if event.message.text and event.message.text.startswith('/'):
+                if event.sender_id == self.owner_id:
+                    await self.handle_command(event)
+                return  # Don't process further if it's a command
 
             if event.is_private:
                 await self.handle_dm(event)
@@ -120,12 +122,6 @@ class TelegramBot:
 
     async def handle_dm(self, event):
         user_id = event.sender_id
-        text = event.message.text or ""
-
-        # Owner command
-        if user_id == self.owner_id and text.startswith('/'):
-            await self.handle_command(event)
-            return
 
         # AFK DM 5 min cooldown
         now = time.time()
@@ -141,7 +137,6 @@ class TelegramBot:
 
     async def handle_group(self, event):
         chat_id = event.chat_id
-        text = event.message.text or ""
         is_mentioned = event.message.mentioned or (event.message.reply_to_msg_id and 
                                                   (await event.get_reply_message()).sender_id == self.bot_user_id)
         if not is_mentioned:
@@ -155,30 +150,33 @@ class TelegramBot:
         if chat_id in self.reply_settings:
             await event.reply(self.reply_settings[chat_id])
 
-        # Owner commands in group
-        if event.sender_id == self.owner_id and text.startswith('/'):
-            await self.handle_command(event)
-
     async def handle_command(self, event):
         text = event.message.text.strip()
         chat_id = event.chat_id
 
         if text.startswith('/spam '):
-            parts = text.split(' ', 3)
-            if len(parts) < 4:
-                await event.reply("Usage: /spam <chat_id> <message> <delay>")
+            parts = text.split(' ', 2)
+            if len(parts) < 3:
+                await event.reply("Usage: /spam <message> <delay>")
                 return
             try:
-                target_chat = int(parts[1])
-                msg = parts[2]
-                delay = int(parts[3])
+                msg = parts[1]
+                delay = int(parts[2])
             except:
                 await event.reply("❌ Invalid parameters")
                 return
-            await self.start_spam(target_chat, msg, delay)
-            await event.reply(f"✅ Started spam in chat {target_chat} every {delay}s")
+            await self.start_spam(chat_id, msg, delay)
+            await event.reply(f"✅ Started spam in this chat every {delay}s")
 
         elif text.startswith('/stop_spam'):
+            if chat_id in self.spam_tasks:
+                self.spam_tasks[chat_id].cancel()
+                del self.spam_tasks[chat_id]
+                await event.reply("✅ Stopped spam in this chat")
+            else:
+                await event.reply("❌ No spam running in this chat")
+
+        elif text == '/stop_all_spam':
             stopped = await self.stop_all_spam()
             await event.reply(f"✅ Stopped {stopped} spam tasks")
 
@@ -187,14 +185,25 @@ class TelegramBot:
             if len(parts) < 3:
                 await event.reply("Usage: /setReplyFor <id> <message>")
                 return
-            target_id = int(parts[1])
+            try:
+                target_id = int(parts[1])
+            except:
+                await event.reply("❌ Invalid ID")
+                return
             self.reply_settings[target_id] = parts[2]
             self.save_settings()
             await event.reply(f"✅ Reply set for ID {target_id}")
 
         elif text.startswith('/resetreplyfor '):
             parts = text.split(' ')
-            target_id = int(parts[1])
+            if len(parts) < 2:
+                await event.reply("Usage: /resetreplyfor <id>")
+                return
+            try:
+                target_id = int(parts[1])
+            except:
+                await event.reply("❌ Invalid ID")
+                return
             if target_id in self.reply_settings:
                 del self.reply_settings[target_id]
                 self.save_settings()
@@ -251,32 +260,34 @@ class TelegramBot:
 
         elif text == '/status':
             uptime = self.get_uptime()
-            await event.reply(f"⏱ Uptime: {uptime}\nAFK Group: {self.afk_group_active}\nAFK DM: {self.afk_dm_active}\nReplies: {len(self.reply_settings)}\nBot ID: {self.bot_user_id}")
+            spam_count = len(self.spam_tasks)
+            await event.reply(f"⏱ Uptime: {uptime}\n🤖 Bot ID: {self.bot_user_id}\n📊 AFK Group: {self.afk_group_active}\n📊 AFK DM: {self.afk_dm_active}\n📋 Active Replies: {len(self.reply_settings)}\n🚀 Spam Tasks: {spam_count}")
 
         elif text == '/help':
-            help_text = """🤖 Bot Commands:
+            help_text = """🤖 Bot Commands (Owner Only):
 
 **Spam**
-• /spam <chat_id> <msg> <delay> - spam message in chat
-• /stop_spam - stop all spam
+• /spam <msg> <delay> - spam in current chat
+• /stop_spam - stop spam in current chat
+• /stop_all_spam - stop all spam tasks
 
 **Replies**
-• /setReplyFor <id> <msg>
-• /resetreplyfor <id>
-• /clear_reply
-• /listreply
+• /setReplyFor <id> <msg> - set auto reply
+• /resetreplyfor <id> - remove auto reply
+• /clear_reply - clear all replies
+• /listreply - list active replies
 
 **AFK**
-• /afk_group <msg>
-• /afk_group_off
-• /afk_dm <msg>
-• /afk_dm_off
-• /afk <msg>
-• /afk_off
+• /afk_group <msg> - enable group AFK
+• /afk_group_off - disable group AFK
+• /afk_dm <msg> - enable DM AFK
+• /afk_dm_off - disable DM AFK
+• /afk <msg> - enable both AFK
+• /afk_off - disable all AFK
 
 **Info**
-• /status
-• /help"""
+• /status - show bot status
+• /help - show this help"""
             await event.reply(help_text)
 
     async def start_spam(self, chat_id: int, msg: str, delay: int):
